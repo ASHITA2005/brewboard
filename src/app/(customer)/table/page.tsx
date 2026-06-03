@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useTableStore } from "@/stores/table.store";
 import { useToastStore } from "@/stores/toasts.store";
 import type { Order, TableSession } from "@/types/brewboard";
+import { DoodleCup } from "@/components/doodle";
 
 export default function TablePage() {
   const [tableNumber, setTableNumber] = useState("");
@@ -18,7 +19,7 @@ export default function TablePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [sessionChecked, setSessionChecked] = useState(false);
-  const { user } = useAuthUser();
+  const { user, isLoading: authLoading } = useAuthUser();
   const { activeTable, customerName, setCustomerName, setActiveTable } = useTableStore();
   const addToast = useToastStore((state) => state.addToast);
   const router = useRouter();
@@ -170,6 +171,16 @@ export default function TablePage() {
     }
   }
 
+  const showLoading = authLoading || (!!user && !sessionChecked);
+
+  if (showLoading) {
+    return (
+      <div className="page-stack" style={{ justifyContent: "center", alignItems: "center", minHeight: "60vh", textAlign: "center" }}>
+        <DoodleCup />
+        <p className="tagline" style={{ marginTop: "24px" }}>Restoring your table session...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="page-stack">

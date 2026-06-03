@@ -151,30 +151,19 @@ export async function extractMenuFromImage(imageBase64: string, mimeType: string
 
 export async function visualiseDish(itemName: string, description: string) {
   const client = getGeminiClient();
-  const response = await client.models.generateContent({
-    model: "gemini-2.0-flash-preview-image-generation",
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            text: `Create a photorealistic café food photo of "${itemName}". ${description}. Warm natural lighting, shallow depth of field, no text or watermark.`
-          }
-        ]
-      }
-    ],
+  const response = await client.models.generateImages({
+    model: "imagen-4.0-generate-001",
+    prompt: `Create a photorealistic café food photo of "${itemName}". ${description}. Warm natural lighting, shallow depth of field, no text or watermark.`,
     config: {
-      responseModalities: ["IMAGE", "TEXT"]
+      numberOfImages: 1,
+      outputMimeType: "image/jpeg"
     }
   });
 
-  const parts = response.candidates?.[0]?.content?.parts ?? [];
-
-  for (const part of parts) {
-    if (part.inlineData?.data) {
-      const mimeType = part.inlineData.mimeType ?? "image/png";
-      return `data:${mimeType};base64,${part.inlineData.data}`;
-    }
+  const generatedImage = response.generatedImages?.[0];
+  if (generatedImage?.image?.imageBytes) {
+    const mimeType = "image/jpeg";
+    return `data:${mimeType};base64,${generatedImage.image.imageBytes}`;
   }
 
   throw new Error("Gemini did not return an image.");
