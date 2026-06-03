@@ -111,35 +111,29 @@ function reconcileMenus(first: ExtractedMenu, second: ExtractedMenu): ParsedMenu
 
 export async function extractMenuFromImage(imageBase64: string, mimeType: string) {
   try {
-    // Run the two passes in parallel to cut the execution time in half and avoid serverless timeouts
-    const [firstPass, secondPass] = await Promise.all([
-      runMenuPass(imageBase64, mimeType),
-      runMenuPass(imageBase64, mimeType)
-    ]);
-
+    // Run a single-pass extraction to prevent 429 quota exhaustion and speed up requests
+    const singlePass = await runMenuPass(imageBase64, mimeType);
     return {
-      items: reconcileMenus(firstPass, secondPass),
+      items: reconcileMenus(singlePass, singlePass),
       passes: {
         first: "complete" as const,
         second: "complete" as const
       }
     };
-  } catch (parallelError) {
-    console.warn("Parallel dual-pass extraction failed, falling back to single-pass:", parallelError);
-    try {
-      // Fallback: run a single pass and reconcile it against itself to salvage the scan
-      const singlePass = await runMenuPass(imageBase64, mimeType);
-      return {
-        items: reconcileMenus(singlePass, singlePass),
-        passes: {
-          first: "complete" as const,
-          second: "complete" as const
-        }
-      };
-    } catch (fallbackError) {
-      console.error("Single-pass fallback also failed:", fallbackError);
-      throw new Error("Could not scan the menu. Please check the image quality and try again.");
+  } catch (error) {
+    console.error("Menu extraction failed:", error);
+    const isRateLimit =
+      error instanceof Error &&
+      (error.message.includes("429") ||
+        error.message.includes("RESOURCE_EXHAUSTED") ||
+        error.message.includes("Quota exceeded"));
+
+    if (isRateLimit) {
+      throw new Error(
+        "Rate limit exceeded. The Gemini API is currently busy. Please wait 10-15 seconds and click extract again."
+      );
     }
+    throw new Error("Could not scan the menu. Please check the image quality and try again.");
   }
 }
 
