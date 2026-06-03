@@ -4,6 +4,8 @@ import { z } from "zod/v4";
 import { mapOrder } from "@/lib/brewboard-mappers";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+export const dynamic = "force-dynamic";
+
 const itemSchema = z.object({
   name: z.string().min(1),
   quantity: z.number().int().positive(),

@@ -4,6 +4,8 @@ import { z } from "zod/v4";
 import { mapLoveMessage } from "@/lib/brewboard-mappers";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+export const dynamic = "force-dynamic";
+
 const messageSchema = z.object({
   tableSessionId: z.string().uuid(),
   body: z.string().min(1).max(200)

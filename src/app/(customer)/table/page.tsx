@@ -51,7 +51,7 @@ export default function TablePage() {
 
     async function restoreSession() {
       try {
-        const response = await fetch("/api/tables/user-session");
+        const response = await fetch("/api/tables/user-session", { cache: "no-store" });
         if (response.ok) {
           const body = await response.json();
           if (body.table) {
@@ -78,7 +78,7 @@ export default function TablePage() {
 
     async function loadActiveOrders() {
       try {
-        const response = await fetch(`/api/tables/feed?tableSessionId=${activeTable!.id}`);
+        const response = await fetch(`/api/tables/feed?tableSessionId=${activeTable!.id}`, { cache: "no-store" });
         if (response.ok) {
           const body = await response.json();
           if (body.orders) {

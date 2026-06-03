@@ -5,6 +5,9 @@ import { mapMenuItem } from "@/lib/brewboard-mappers";
 import { menuItems } from "@/lib/sample-data";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+export const dynamic = "force-dynamic";
+
+
 const menuItemSchema = z.object({
   id: z.string().optional(),
   name: z.string().min(1),

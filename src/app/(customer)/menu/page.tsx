@@ -23,7 +23,7 @@ export default function MenuPage() {
     let cancelled = false;
 
     async function loadMenu() {
-      const response = await fetch("/api/menu");
+      const response = await fetch("/api/menu", { cache: "no-store" });
       const body = (await response.json()) as { items?: MenuItem[] };
 
       if (!cancelled && body.items?.length) {

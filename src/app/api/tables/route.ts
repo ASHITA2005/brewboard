@@ -7,6 +7,8 @@ import { generateTableCode } from "@/lib/utils";
 
 import { createClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 const createSchema = z.object({
   tableNumber: z.string().min(1),
   ownerName: z.string().min(1).default("Guest")

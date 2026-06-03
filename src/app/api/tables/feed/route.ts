@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { mapLoveMessage, mapOrder } from "@/lib/brewboard-mappers";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const tableSessionId = url.searchParams.get("tableSessionId");

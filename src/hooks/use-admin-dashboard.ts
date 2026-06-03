@@ -16,7 +16,7 @@ export function useAdminDashboard() {
 
   const loadDashboard = useCallback(async () => {
     try {
-      const response = await fetch("/api/admin/dashboard");
+      const response = await fetch("/api/admin/dashboard", { cache: "no-store" });
       if (!response.ok) throw new Error("Could not load dashboard data");
       
       const body = (await response.json()) as {
