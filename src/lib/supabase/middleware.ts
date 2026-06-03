@@ -29,9 +29,20 @@ export async function updateSession(request: NextRequest) {
     }
   });
 
-  const {
-    data: { user }
-  } = await supabase.auth.getUser();
+  // Optimize: Only call getUser() if we actually have a session cookie
+  const hasAuthCookie = request.cookies.getAll().some((cookie) =>
+    cookie.name.includes("auth-token")
+  );
+
+  let user = null;
+  if (hasAuthCookie) {
+    try {
+      const { data } = await supabase.auth.getUser();
+      user = data.user;
+    } catch (err) {
+      console.error("Error retrieving user session in middleware:", err);
+    }
+  }
 
   const needsCustomerAuth = customerPaths.some(
     (path) => pathname === path || pathname.startsWith(`${path}/`)

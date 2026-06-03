@@ -130,15 +130,26 @@ label {
 }
 
 .landing-page {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
   min-height: 100vh;
-  place-items: center;
-  padding: 24px;
+  padding: 60px 24px;
 }
 
 .landing-card {
+  margin: auto;
   width: min(100%, 430px);
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 36px;
+}
+
+.landing-card .eyebrow {
+  margin-bottom: -8px;
 }
 
 .landing-card h1 {
@@ -161,11 +172,11 @@ label {
 .cart-lines,
 .detail-list {
   display: grid;
-  gap: 16px;
+  gap: 20px;
 }
 
 .landing-actions {
-  margin-top: 28px;
+  margin-top: 36px;
 }
 
 .session-note,
@@ -399,8 +410,16 @@ label {
 .hero-panel,
 .reveal-card {
   display: grid;
-  gap: 18px;
-  padding: 24px;
+  gap: 24px;
+  padding: 32px;
+}
+
+.hero-panel > div,
+.section-heading > div,
+.admin-header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .table-hero {
@@ -427,13 +446,26 @@ label {
 .builder-layout,
 .menu-layout {
   display: grid;
-  gap: 20px;
+  gap: 28px;
 }
 
 .action-card {
   display: grid;
-  gap: 12px;
-  padding: 20px;
+  gap: 16px;
+  padding: 28px;
+}
+
+.landing-page .action-card {
+  gap: 24px;
+  padding: 40px 32px;
+}
+
+.action-card label {
+  text-align: left;
+}
+
+.action-card input {
+  text-align: left;
 }
 
 .caramel {
@@ -1063,13 +1095,7 @@ label {
 }
 
 @media (min-width: 1024px) {
-  .customer-shell {
-    padding-bottom: 0;
-  }
-
-  .bottom-nav {
-    display: none;
-  }
+  /* Keep customer bottom navigation visible on desktop screens for usability */
 
   .menu-layout {
     grid-template-columns: minmax(0, 1fr) 320px;

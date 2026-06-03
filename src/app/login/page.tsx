@@ -6,7 +6,7 @@ import { DoodleCup } from "@/components/doodle";
 export default async function LoginPage({
   searchParams
 }: {
-  searchParams: Promise<{ error?: string; next?: string }>;
+  searchParams: Promise<{ error?: string; next?: string; description?: string }>;
 }) {
   const params = await searchParams;
   const nextPath = params.next ?? "/table";
@@ -21,6 +21,11 @@ export default async function LoginPage({
         {params.error ? (
           <div className="form-error-block" style={{ margin: "12px 0", textAlign: "center" }}>
             <p className="form-error" style={{ marginBottom: "4px" }}>Sign-in could not complete.</p>
+            {params.description ? (
+              <p className="form-error" style={{ fontSize: "14px", color: "var(--coral)", marginBottom: "8px", fontWeight: "bold" }}>
+                Error reason: {params.description}
+              </p>
+            ) : null}
             <p className="session-note" style={{ fontSize: "14px", lineHeight: "1.4" }}>
               💡 <strong>Troubleshooting Tip:</strong> Make sure you have copied the <strong>Auth Client ID</strong> and <strong>Client Secret</strong> from your configs.txt and pasted them into your <strong>Supabase Dashboard &gt; Providers &gt; Google</strong> settings page, and that you have registered your redirect URI in your Google Cloud Console!
             </p>

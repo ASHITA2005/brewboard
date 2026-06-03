@@ -5,6 +5,8 @@ import { mapTableSession } from "@/lib/brewboard-mappers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { generateTableCode } from "@/lib/utils";
 
+import { createClient } from "@/lib/supabase/server";
+
 const createSchema = z.object({
   tableNumber: z.string().min(1),
   ownerName: z.string().min(1).default("Guest")
@@ -53,6 +55,19 @@ export async function POST(request: Request) {
         .single();
 
       if (!error && data) {
+        try {
+          const serverSupabase = await createClient();
+          const { data: { user } } = await serverSupabase.auth.getUser();
+          if (user) {
+            await supabase.from("brewboard_user_sessions").upsert({
+              user_id: user.id,
+              table_session_id: data.id
+            });
+          }
+        } catch (authError) {
+          console.error("Failed to associate user session on table creation:", authError);
+        }
+
         return NextResponse.json({ table: mapTableSession(data) });
       }
 

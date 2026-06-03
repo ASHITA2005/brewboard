@@ -17,6 +17,7 @@ export default function TablePage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const { user } = useAuthUser();
   const { activeTable, customerName, setCustomerName, setActiveTable } = useTableStore();
   const addToast = useToastStore((state) => state.addToast);
@@ -24,8 +25,12 @@ export default function TablePage() {
 
   async function handleSignOut() {
     const supabase = createClient();
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("Sign out error:", err);
+    }
     setActiveTable(null);
-    await supabase.auth.signOut();
     router.push("/login");
   }
 
@@ -39,6 +44,30 @@ export default function TablePage() {
       setCustomerName(profileName);
     }
   }, [setCustomerName, user]);
+
+  useEffect(() => {
+    if (!user || sessionChecked) return;
+
+    async function restoreSession() {
+      try {
+        const response = await fetch("/api/tables/user-session");
+        if (response.ok) {
+          const body = await response.json();
+          if (body.table) {
+            setActiveTable(body.table);
+          } else {
+            setActiveTable(null);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to restore table session:", err);
+      } finally {
+        setSessionChecked(true);
+      }
+    }
+
+    restoreSession();
+  }, [user, setActiveTable, sessionChecked]);
 
   useEffect(() => {
     if (!activeTable) {
@@ -225,7 +254,12 @@ export default function TablePage() {
               className="secondary-button"
               type="button"
               style={{ width: "100%", marginTop: "8px" }}
-              onClick={() => {
+              onClick={async () => {
+                try {
+                  await fetch("/api/tables/user-session", { method: "DELETE" });
+                } catch (err) {
+                  console.error("Failed to clear backend user session:", err);
+                }
                 setActiveTable(null);
                 addToast("Left the table. You can create or join a new one.", "info");
               }}

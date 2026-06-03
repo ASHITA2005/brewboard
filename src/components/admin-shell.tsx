@@ -18,8 +18,13 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const router = useRouter();
 
   async function handleLogout() {
+    console.log("LOGOUT CLICKED IN CLIENT");
     const supabase = createClient();
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("Failed to sign out:", err);
+    }
     router.replace("/admin/login");
     router.refresh();
   }

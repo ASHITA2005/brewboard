@@ -20,15 +20,19 @@ export function CustomerShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const itemCount = useCartStore((state) => state.lines.reduce((total, line) => total + line.quantity, 0));
   const { toasts, removeToast } = useToastStore();
-  const setActiveTable = useTableStore((state) => state.setActiveTable);
   const router = useRouter();
+  const setActiveTable = useTableStore((state) => state.setActiveTable);
 
   const handleSignOut = useCallback(async () => {
     const supabase = createClient();
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("Failed to sign out:", err);
+    }
     setActiveTable(null);
-    await supabase.auth.signOut();
     router.push("/login");
-  }, [setActiveTable, router]);
+  }, [router, setActiveTable]);
 
   return (
     <div className="customer-shell">

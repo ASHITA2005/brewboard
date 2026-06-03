@@ -4,6 +4,8 @@ import { z } from "zod/v4";
 import { mapTableSession } from "@/lib/brewboard-mappers";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+import { createClient } from "@/lib/supabase/server";
+
 const joinSchema = z.object({
   code: z.string().length(6)
 });
@@ -35,6 +37,20 @@ export async function POST(request: Request) {
       .single();
 
     if (error) throw error;
+
+    try {
+      const serverSupabase = await createClient();
+      const { data: { user } } = await serverSupabase.auth.getUser();
+      if (user) {
+        await supabase.from("brewboard_user_sessions").upsert({
+          user_id: user.id,
+          table_session_id: data.id
+        });
+      }
+    } catch (authError) {
+      console.error("Failed to associate user session on table join:", authError);
+    }
+
     return NextResponse.json({ table: mapTableSession(data) });
   } catch {
     return NextResponse.json({ error: "Could not join this table." }, { status: 500 });
