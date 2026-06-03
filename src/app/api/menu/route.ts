@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { z } from "zod/v4";
+import { z } from "zod";
 
 import { mapMenuItem } from "@/lib/brewboard-mappers";
 import { menuItems } from "@/lib/sample-data";

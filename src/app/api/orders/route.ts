@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { z } from "zod/v4";
+import { z } from "zod";
 
 import { mapOrder } from "@/lib/brewboard-mappers";
 import { createAdminClient } from "@/lib/supabase/admin";

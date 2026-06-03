@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { z } from "zod/v4";
+import { z } from "zod";
 
 import { extractMenuFromImage } from "@/lib/gemini-menu";
 import { parsedMenuDraft } from "@/lib/sample-data";
