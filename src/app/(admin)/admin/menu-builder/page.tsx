@@ -3,66 +3,110 @@
 import { CheckCircle2, FileImage, GripVertical, Sparkles, Trash2, UploadCloud } from "lucide-react";
 import { ChangeEvent, useState } from "react";
 
-import { formatMoney } from "@/lib/utils";
 import type { ParsedMenuItem } from "@/types/brewboard";
+
+type UploadedImage = {
+  id: string;
+  name: string;
+  base64: string;
+  mimeType: string;
+};
+
+function readFileAsBase64(file: File): Promise<{ base64: string; mimeType: string; name: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("Could not read file."));
+        return;
+      }
+      const parts = result.split(",");
+      const base64 = parts[1];
+      if (!base64) {
+        reject(new Error("Could not read base64."));
+        return;
+      }
+      resolve({ base64, mimeType: file.type || "image/jpeg", name: file.name });
+    };
+    reader.onerror = () => reject(new Error("File reading failed."));
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function MenuBuilderPage() {
   const [step, setStep] = useState<"upload" | "processing" | "review">("upload");
+  const [uploadedImages, setUploadedImages] = useState<UploadedImage[]>([]);
   const [items, setItems] = useState<ParsedMenuItem[]>([]);
   const [error, setError] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (file.size > 10 * 1024 * 1024) {
-      setError("Each image must be 10 MB or smaller.");
-      return;
-    }
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
 
     setError("");
+
+    const validFiles: File[] = [];
+    for (let i = 0; i < files.length; i += 1) {
+      const file = files[i];
+      if (file.size > 10 * 1024 * 1024) {
+        setError("Each image must be 10 MB or smaller.");
+        return;
+      }
+      validFiles.push(file);
+    }
+
+    try {
+      const results = await Promise.all(validFiles.map(readFileAsBase64));
+      const newImages = results.map((r, idx) => ({
+        id: `img-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 9)}`,
+        name: r.name,
+        base64: r.base64,
+        mimeType: r.mimeType
+      }));
+      setUploadedImages((current) => [...current, ...newImages]);
+    } catch (err) {
+      setError("Could not read one or more menu images.");
+    }
+  }
+
+  async function handleStartExtraction() {
+    if (uploadedImages.length === 0) return;
+
     setStep("processing");
+    setError("");
 
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const result = reader.result;
-
-      if (typeof result !== "string") {
-        setError("Could not read the menu image.");
-        setStep("upload");
-        return;
-      }
-
-      const base64 = result.split(",")[1];
-
-      if (!base64) {
-        setError("Could not read the menu image.");
-        setStep("upload");
-        return;
-      }
-
-      try {
+    try {
+      const extractionPromises = uploadedImages.map(async (image, imgIndex) => {
         const response = await fetch("/api/gemini/extract", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageBase64: base64, mimeType: file.type || "image/jpeg" })
+          body: JSON.stringify({ imageBase64: image.base64, mimeType: image.mimeType })
         });
+
         const body = (await response.json()) as { items?: ParsedMenuItem[]; error?: string };
 
         if (!response.ok || !body.items?.length) {
-          throw new Error(body.error ?? "Menu extraction failed.");
+          throw new Error(body.error ?? `Extraction failed for ${image.name}.`);
         }
 
-        setItems(body.items);
-        setStep("review");
-      } catch (extractError) {
-        setError(extractError instanceof Error ? extractError.message : "Menu extraction failed.");
-        setStep("upload");
-      }
-    };
+        // Map unique draft IDs to prevent duplicate keys in the grid
+        return body.items.map((item, itemIndex) => ({
+          ...item,
+          id: `${item.id}-${imgIndex}-${itemIndex}`
+        }));
+      });
 
-    reader.readAsDataURL(file);
+      const results = await Promise.all(extractionPromises);
+      const allItems = results.flat();
+
+      setItems(allItems);
+      setStep("review");
+    } catch (extractError) {
+      setError(extractError instanceof Error ? extractError.message : "Menu extraction failed.");
+      setStep("upload");
+    }
   }
 
   async function publishMenu() {
@@ -100,6 +144,7 @@ export default function MenuBuilderPage() {
     setIsPublishing(false);
     setStep("upload");
     setItems([]);
+    setUploadedImages([]);
   }
 
   function updateItem(id: string, patch: Partial<ParsedMenuItem>) {
@@ -122,28 +167,119 @@ export default function MenuBuilderPage() {
       {error ? <p className="form-error">{error}</p> : null}
 
       {step === "upload" ? (
-        <section className="builder-layout">
-          <div className="upload-zone">
+        <section className="builder-layout" style={{ display: "grid", gap: "24px" }}>
+          <div className="upload-zone" style={{ padding: "32px 24px" }}>
             <UploadCloud size={56} />
             <h2>Upload your menu photo(s)</h2>
-            <p>JPG, PNG, HEIC - max 10 MB per image.</p>
-            <label className="primary-button lavender-button" htmlFor="menu-upload">
-              <Sparkles size={18} />
-              Extract Menu with AI
-            </label>
-            <input
-              id="menu-upload"
-              type="file"
-              accept="image/jpeg,image/png,image/heic,image/webp"
-              className="sr-only"
-              onChange={handleFileChange}
-            />
+            <p style={{ marginBottom: "16px" }}>JPG, PNG, HEIC - max 10 MB per image. Select multiple to scan them together.</p>
+
+            <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+              <label className="primary-button lavender-button" htmlFor="menu-upload" style={{ cursor: "pointer" }}>
+                <UploadCloud size={18} style={{ marginRight: "8px" }} />
+                Select Photo(s)
+              </label>
+              <input
+                id="menu-upload"
+                type="file"
+                multiple
+                accept="image/jpeg,image/png,image/heic,image/webp"
+                className="sr-only"
+                onChange={handleFileChange}
+              />
+
+              {uploadedImages.length > 0 ? (
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleStartExtraction}
+                  style={{ background: "var(--ink)", color: "white" }}
+                >
+                  <Sparkles size={18} style={{ marginRight: "8px" }} />
+                  Extract Menu with AI ({uploadedImages.length})
+                </button>
+              ) : null}
+            </div>
+
+            {uploadedImages.length > 0 ? (
+              <div style={{ marginTop: "24px" }}>
+                <p className="eyebrow" style={{ textAlign: "left", marginBottom: "8px" }}>Selected Photos ({uploadedImages.length})</p>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))",
+                    gap: "12px",
+                    width: "100%"
+                  }}
+                >
+                  {uploadedImages.map((image) => (
+                    <div
+                      key={image.id}
+                      style={{
+                        position: "relative",
+                        border: "2px solid var(--ink)",
+                        borderRadius: "12px",
+                        overflow: "hidden",
+                        aspectRatio: "1",
+                        background: "white",
+                        boxShadow: "2px 2px 0 var(--ink)"
+                      }}
+                    >
+                      <img
+                        src={`data:${image.mimeType};base64,${image.base64}`}
+                        alt={image.name}
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      />
+                      <button
+                        onClick={() => setUploadedImages((current) => current.filter((img) => img.id !== image.id))}
+                        type="button"
+                        style={{
+                          position: "absolute",
+                          top: "4px",
+                          right: "4px",
+                          background: "#c44",
+                          color: "white",
+                          border: "1.5px solid var(--ink)",
+                          borderRadius: "50%",
+                          width: "20px",
+                          height: "20px",
+                          display: "flex",
+                          justifyContent: "center",
+                          alignItems: "center",
+                          cursor: "pointer",
+                          fontWeight: "bold",
+                          fontSize: "10px"
+                        }}
+                        aria-label={`Remove ${image.name}`}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setUploadedImages([])}
+                  style={{
+                    marginTop: "16px",
+                    color: "#c44",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: "14px",
+                    textDecoration: "underline"
+                  }}
+                >
+                  Clear all photos
+                </button>
+              </div>
+            ) : null}
           </div>
-          <aside className="builder-note">
+
+          <aside className="builder-note" style={{ height: "fit-content" }}>
             <FileImage size={34} />
-            <h3>What happens next</h3>
+            <h3>Multi-Photo Support</h3>
             <p>
-              The system scans the menu image, identifies names, categories, and prices, and flags any potential discrepancies for your final review.
+              You can now select multiple images at once (or click Select Photo(s) again to add more). Once uploaded, clicking "Extract Menu with AI" will scan all photos in parallel and merge their menu items into a single review list.
             </p>
           </aside>
         </section>
@@ -154,20 +290,19 @@ export default function MenuBuilderPage() {
           <Sparkles size={54} />
           <h2>Reading and verifying...</h2>
           <div className="progress-row">
-            <span>Scanning physical menu</span>
+            <span>Scanning physical menus</span>
             <div>
               <i />
             </div>
           </div>
           <div className="progress-row delay">
-            <span>Optimizing digital list</span>
+            <span>Merging digital lists</span>
             <div>
               <i />
             </div>
           </div>
         </section>
       ) : null}
-
 
       {step === "review" ? (
         <section className="review-panel">

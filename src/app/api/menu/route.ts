@@ -106,3 +106,92 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not publish the menu right now." }, { status: 500 });
   }
 }
+
+export async function PUT(request: Request) {
+  const payload = publishSchema.safeParse(await request.json().catch(() => null));
+
+  if (!payload.success) {
+    return NextResponse.json({ error: "Invalid menu payload." }, { status: 400 });
+  }
+
+  try {
+    const supabase = createAdminClient();
+    const items = payload.data.items;
+
+    // Get all currently active item IDs to check for deletions
+    const { data: activeItems, error: activeError } = await supabase
+      .from("brewboard_menu_items")
+      .select("id")
+      .eq("is_active", true);
+
+    if (activeError) throw activeError;
+    const activeIds = new Set(activeItems?.map((item) => item.id) ?? []);
+
+    const toInsert: any[] = [];
+    const toUpdate: any[] = [];
+    const payloadIds = new Set<string>();
+
+    items.forEach((item, index) => {
+      const isNew = !item.id || item.id.startsWith("manual-");
+      const row = {
+        name: item.name,
+        description: item.description,
+        price: item.price,
+        category: item.category,
+        image_url: item.imageUrl || null,
+        accent: item.accent,
+        is_active: true,
+        sort_order: index + 1
+      };
+
+      if (isNew) {
+        toInsert.push(row);
+      } else {
+        payloadIds.add(item.id!);
+        toUpdate.push({ id: item.id, ...row });
+      }
+    });
+
+    // Mark missing items as inactive
+    const toDeactivate = Array.from(activeIds).filter((id) => !payloadIds.has(id));
+    if (toDeactivate.length > 0) {
+      const { error: deactivateError } = await supabase
+        .from("brewboard_menu_items")
+        .update({ is_active: false })
+        .in("id", toDeactivate);
+      if (deactivateError) throw deactivateError;
+    }
+
+    // Insert new items
+    if (toInsert.length > 0) {
+      const { error: insertError } = await supabase
+        .from("brewboard_menu_items")
+        .insert(toInsert);
+      if (insertError) throw insertError;
+    }
+
+    // Update existing items
+    for (const item of toUpdate) {
+      const { id, ...row } = item;
+      const { error: updateError } = await supabase
+        .from("brewboard_menu_items")
+        .update(row)
+        .eq("id", id);
+      if (updateError) throw updateError;
+    }
+
+    // Return the new active menu
+    const { data, error } = await supabase
+      .from("brewboard_menu_items")
+      .select("id,name,description,price,category,image_url,accent")
+      .eq("is_active", true)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error) throw error;
+    return NextResponse.json({ items: (data ?? []).map(mapMenuItem) });
+  } catch (err) {
+    console.error("Failed to update menu:", err);
+    return NextResponse.json({ error: "Could not save the menu edits." }, { status: 500 });
+  }
+}
