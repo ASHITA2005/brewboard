@@ -52,6 +52,33 @@ export async function POST(request: Request) {
 
     if (deactivateError) throw deactivateError;
 
+    // Close all open table sessions to transition to the new menu
+    const { error: closeSessionsError } = await supabase
+      .from("brewboard_table_sessions")
+      .update({
+        is_closed: true,
+        closed_at: new Date().toISOString(),
+        last_active_at: new Date().toISOString()
+      })
+      .eq("is_closed", false);
+
+    if (closeSessionsError) {
+      console.error("Failed to close active table sessions on menu publish:", closeSessionsError);
+    }
+
+    // Complete all pending/active orders to archive them in history
+    const { error: completeOrdersError } = await supabase
+      .from("brewboard_orders")
+      .update({
+        status: "complete",
+        completed_at: new Date().toISOString()
+      })
+      .neq("status", "complete");
+
+    if (completeOrdersError) {
+      console.error("Failed to complete pending orders on menu publish:", completeOrdersError);
+    }
+
     const rows = payload.data.items.map((item, index) => ({
       name: item.name,
       description: item.description,
@@ -71,7 +98,8 @@ export async function POST(request: Request) {
 
     if (error) throw error;
     return NextResponse.json({ items: (data ?? []).map(mapMenuItem) });
-  } catch {
+  } catch (err) {
+    console.error("Failed to publish menu:", err);
     return NextResponse.json({ error: "Could not publish the menu right now." }, { status: 500 });
   }
 }

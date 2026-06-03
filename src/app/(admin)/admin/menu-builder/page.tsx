@@ -66,6 +66,11 @@ export default function MenuBuilderPage() {
   }
 
   async function publishMenu() {
+    const confirmed = window.confirm(
+      "Publishing a new menu will automatically close all active table sessions and mark pending customer orders as complete. Are you sure you want to proceed?"
+    );
+    if (!confirmed) return;
+
     setIsPublishing(true);
     setError("");
 

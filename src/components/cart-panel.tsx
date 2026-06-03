@@ -1,6 +1,6 @@
 "use client";
 
-import { Minus, Plus, ShoppingBag, Trash2 } from "lucide-react";
+import { Check, CreditCard, Minus, Plus, QrCode, ShoppingBag, Smartphone, Trash2, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -22,6 +22,10 @@ export function CartPanel() {
     (user?.user_metadata?.picture as string | undefined);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState("");
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState("card");
+  const [paymentState, setPaymentState] = useState<"idle" | "processing" | "success">("idle");
+
   const subtotal = lines.reduce((total, line) => total + line.item.price * line.quantity, 0);
   const tax = Math.round(subtotal * 0.05);
   const total = subtotal + tax;
@@ -64,6 +68,35 @@ export function CartPanel() {
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  function handleCheckoutClick() {
+    if (!activeTable) {
+      setMessage("Create or join a table before placing an order.");
+      router.push("/table");
+      return;
+    }
+    setIsPaymentOpen(true);
+    setPaymentState("idle");
+    setPaymentMethod("card");
+  }
+
+  async function simulatePayment() {
+    setPaymentState("processing");
+
+    // Wait 1.5s to simulate payment authorization
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    setPaymentState("success");
+
+    // Wait 1.2s to show success state
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    setIsPaymentOpen(false);
+    setPaymentState("idle");
+
+    // Submit order to API
+    await placeOrder();
   }
 
 
@@ -120,11 +153,97 @@ export function CartPanel() {
             </div>
           </dl>
           {message ? <p className="form-error">{message}</p> : null}
-          <button className="primary-button full" onClick={placeOrder} disabled={isSubmitting}>
-            {isSubmitting ? "Placing..." : "Place Order"}
+          <button className="primary-button full" onClick={handleCheckoutClick} disabled={isSubmitting}>
+            {isSubmitting ? "Processing..." : "Place Order"}
           </button>
           <p className="fine-print">Brew Points preview only. Loyalty is out of scope for v1.</p>
         </>
+      )}
+
+      {isPaymentOpen && (
+        <div className="payment-overlay">
+          <div className="payment-modal">
+            <div className="payment-modal-header">
+              <h2>Payment Simulation</h2>
+              <p>BrewBoard Café • Table {activeTable?.tableNumber}</p>
+            </div>
+
+            {paymentState === "idle" && (
+              <>
+                <div style={{ textAlign: "center", fontSize: "16px", color: "var(--ink)", padding: "12px 0" }}>
+                  Total Amount to Pay: <strong style={{ fontSize: "22px", display: "block", marginTop: "4px" }}>{formatMoney(total)}</strong>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <span style={{ fontSize: "14px", fontWeight: "bold" }}>Select Simulated Method</span>
+                  <div className="payment-option-grid">
+                    <button
+                      type="button"
+                      className={`payment-option-card ${paymentMethod === "card" ? "active" : ""}`}
+                      onClick={() => setPaymentMethod("card")}
+                    >
+                      <CreditCard size={24} />
+                      <span>Card</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`payment-option-card ${paymentMethod === "upi" ? "active" : ""}`}
+                      onClick={() => setPaymentMethod("upi")}
+                    >
+                      <Smartphone size={24} />
+                      <span>UPI</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`payment-option-card ${paymentMethod === "qr" ? "active" : ""}`}
+                      onClick={() => setPaymentMethod("qr")}
+                    >
+                      <QrCode size={24} />
+                      <span>QR Code</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="payment-modal-footer" style={{ marginTop: "12px" }}>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    style={{ width: "100%" }}
+                    onClick={simulatePayment}
+                  >
+                    Simulate Success Pay
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    style={{ width: "100%" }}
+                    onClick={() => setIsPaymentOpen(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+
+            {paymentState === "processing" && (
+              <div className="payment-status-wrapper">
+                <div className="payment-spinner" />
+                <strong style={{ fontSize: "18px" }}>Authorizing Payment...</strong>
+                <p style={{ color: "rgba(0,0,0,0.6)" }}>Simulating secure transaction gateway</p>
+              </div>
+            )}
+
+            {paymentState === "success" && (
+              <div className="payment-status-wrapper">
+                <div className="payment-success-icon">
+                  <Check size={36} strokeWidth={3} />
+                </div>
+                <strong style={{ fontSize: "20px", color: "var(--espresso)" }}>Payment Successful!</strong>
+                <p style={{ color: "rgba(0,0,0,0.6)" }}>Completing your order placement...</p>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </aside>
   );

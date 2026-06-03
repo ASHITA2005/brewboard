@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       .single();
 
     if (findError || !existing || existing.is_closed) {
-      return NextResponse.json({ error: "That table code is invalid or closed." }, { status: 404 });
+      return NextResponse.json({ error: "We couldn't find an active table with that code. Please verify the code and try again." }, { status: 404 });
     }
 
     const { data, error } = await supabase
@@ -52,7 +52,8 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ table: mapTableSession(data) });
-  } catch {
-    return NextResponse.json({ error: "Could not join this table." }, { status: 500 });
+  } catch (err) {
+    console.error("Join table error:", err);
+    return NextResponse.json({ error: "We encountered an unexpected error. Please try joining again." }, { status: 500 });
   }
 }

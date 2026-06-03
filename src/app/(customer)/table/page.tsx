@@ -159,13 +159,13 @@ export default function TablePage() {
       const body = (await response.json()) as { table?: TableSession; error?: string };
 
       if (!response.ok || !body.table) {
-        throw new Error(body.error ?? "Could not join the table.");
+        throw new Error(body.error ?? "We couldn't join the table. Check your connection and try again.");
       }
 
       setActiveTable(body.table);
       addToast(`Joined Table ${body.table.tableNumber}! Say hi!`, "info");
     } catch (joinError) {
-      setError(joinError instanceof Error ? joinError.message : "Could not join the table.");
+      setError(joinError instanceof Error ? joinError.message : "We couldn't join the table. Check your connection and try again.");
     } finally {
       setIsSubmitting(false);
     }
