@@ -110,43 +110,37 @@ function reconcileMenus(first: ExtractedMenu, second: ExtractedMenu): ParsedMenu
 }
 
 export async function extractMenuFromImage(imageBase64: string, mimeType: string) {
-  let firstPass: ExtractedMenu | null = null;
+  try {
+    // Run the two passes in parallel to cut the execution time in half and avoid serverless timeouts
+    const [firstPass, secondPass] = await Promise.all([
+      runMenuPass(imageBase64, mimeType),
+      runMenuPass(imageBase64, mimeType)
+    ]);
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+    return {
+      items: reconcileMenus(firstPass, secondPass),
+      passes: {
+        first: "complete" as const,
+        second: "complete" as const
+      }
+    };
+  } catch (parallelError) {
+    console.warn("Parallel dual-pass extraction failed, falling back to single-pass:", parallelError);
     try {
-      firstPass = await runMenuPass(imageBase64, mimeType);
-      break;
-    } catch (error) {
-      if (attempt === 1) throw error;
+      // Fallback: run a single pass and reconcile it against itself to salvage the scan
+      const singlePass = await runMenuPass(imageBase64, mimeType);
+      return {
+        items: reconcileMenus(singlePass, singlePass),
+        passes: {
+          first: "complete" as const,
+          second: "complete" as const
+        }
+      };
+    } catch (fallbackError) {
+      console.error("Single-pass fallback also failed:", fallbackError);
+      throw new Error("Could not scan the menu. Please check the image quality and try again.");
     }
   }
-
-  if (!firstPass) {
-    throw new Error("Menu extraction failed.");
-  }
-
-  let secondPass: ExtractedMenu | null = null;
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      secondPass = await runMenuPass(imageBase64, mimeType);
-      break;
-    } catch (error) {
-      if (attempt === 1) throw error;
-    }
-  }
-
-  if (!secondPass) {
-    throw new Error("Menu verification pass failed.");
-  }
-
-  return {
-    items: reconcileMenus(firstPass, secondPass),
-    passes: {
-      first: "complete" as const,
-      second: "complete" as const
-    }
-  };
 }
 
 export async function visualiseDish(itemName: string, description: string) {

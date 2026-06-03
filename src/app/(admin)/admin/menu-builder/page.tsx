@@ -12,24 +12,58 @@ type UploadedImage = {
   mimeType: string;
 };
 
-function readFileAsBase64(file: File): Promise<{ base64: string; mimeType: string; name: string }> {
+function compressImage(file: File): Promise<{ base64: string; mimeType: string; name: string }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== "string") {
-        reject(new Error("Could not read file."));
-        return;
-      }
-      const parts = result.split(",");
-      const base64 = parts[1];
-      if (!base64) {
-        reject(new Error("Could not read base64."));
-        return;
-      }
-      resolve({ base64, mimeType: file.type || "image/jpeg", name: file.name });
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let width = img.width;
+        let height = img.height;
+
+        // Downscale to max 1600px width/height while maintaining aspect ratio
+        const MAX_SIZE = 1600;
+        if (width > MAX_SIZE || height > MAX_SIZE) {
+          if (width > height) {
+            height = Math.round((height * MAX_SIZE) / width);
+            width = MAX_SIZE;
+          } else {
+            width = Math.round((width * MAX_SIZE) / height);
+            height = MAX_SIZE;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Canvas context creation failed"));
+          return;
+        }
+
+        // Draw image onto canvas
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Export as JPEG with 0.80 quality
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+        const base64 = dataUrl.split(",")[1];
+        if (!base64) {
+          reject(new Error("Image compression failed"));
+          return;
+        }
+
+        resolve({
+          base64,
+          mimeType: "image/jpeg",
+          name: file.name
+        });
+      };
+      img.onerror = () => reject(new Error("Image load failed"));
+      img.src = event.target?.result as string;
     };
-    reader.onerror = () => reject(new Error("File reading failed."));
+    reader.onerror = () => reject(new Error("File reading failed"));
     reader.readAsDataURL(file);
   });
 }
@@ -58,7 +92,7 @@ export default function MenuBuilderPage() {
     }
 
     try {
-      const results = await Promise.all(validFiles.map(readFileAsBase64));
+      const results = await Promise.all(validFiles.map(compressImage));
       const newImages = results.map((r, idx) => ({
         id: `img-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 9)}`,
         name: r.name,
