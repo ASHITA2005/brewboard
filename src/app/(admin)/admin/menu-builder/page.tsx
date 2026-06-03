@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, FileImage, GripVertical, Sparkles, Trash2, UploadCloud } from "lucide-react";
+import { CheckCircle2, FileImage, GripVertical, Loader2, Sparkles, Trash2, UploadCloud } from "lucide-react";
 import { ChangeEvent, useState } from "react";
 
 import type { ParsedMenuItem } from "@/types/brewboard";
@@ -12,7 +12,36 @@ type UploadedImage = {
   mimeType: string;
 };
 
-function compressImage(file: File): Promise<{ base64: string; mimeType: string; name: string }> {
+let heic2anyModule: any = null;
+
+async function convertHeicToJpeg(file: File): Promise<Blob> {
+  if (typeof window === "undefined") {
+    throw new Error("HEIC conversion can only run in the browser.");
+  }
+
+  if (!heic2anyModule) {
+    if (!(window as any).heic2any) {
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "https://unpkg.com/heic2any@0.0.4/dist/heic2any.min.js";
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Failed to load HEIC converter library. Please make sure you are online."));
+        document.head.appendChild(script);
+      });
+    }
+    heic2anyModule = (window as any).heic2any;
+  }
+
+  const result = await heic2anyModule({
+    blob: file,
+    toType: "image/jpeg",
+    quality: 0.8
+  });
+
+  return Array.isArray(result) ? result[0] : result;
+}
+
+function compressImage(file: File | Blob, name: string): Promise<{ base64: string; mimeType: string; name: string }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -57,10 +86,10 @@ function compressImage(file: File): Promise<{ base64: string; mimeType: string; 
         resolve({
           base64,
           mimeType: "image/jpeg",
-          name: file.name
+          name
         });
       };
-      img.onerror = () => reject(new Error("Image load failed"));
+      img.onerror = () => reject(new Error("Image load failed. Please ensure the image is a valid format (JPEG, PNG, WEBP)."));
       img.src = event.target?.result as string;
     };
     reader.onerror = () => reject(new Error("File reading failed"));
@@ -74,25 +103,52 @@ export default function MenuBuilderPage() {
   const [items, setItems] = useState<ParsedMenuItem[]>([]);
   const [error, setError] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
+  const [isProcessingFiles, setIsProcessingFiles] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState("");
+
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
     setError("");
+    setIsProcessingFiles(true);
+    setProcessingStatus("Initializing image processing...");
 
     const validFiles: File[] = [];
     for (let i = 0; i < files.length; i += 1) {
       const file = files[i];
       if (file.size > 10 * 1024 * 1024) {
         setError("Each image must be 10 MB or smaller.");
+        setIsProcessingFiles(false);
         return;
       }
       validFiles.push(file);
     }
 
     try {
-      const results = await Promise.all(validFiles.map(compressImage));
+      const results: { base64: string; mimeType: string; name: string }[] = [];
+
+      for (let i = 0; i < validFiles.length; i += 1) {
+        const file = validFiles[i];
+        const isHeic =
+          file.name.toLowerCase().endsWith(".heic") ||
+          file.name.toLowerCase().endsWith(".heif") ||
+          file.type === "image/heic" ||
+          file.type === "image/heif";
+
+        let imageToCompress: File | Blob = file;
+        if (isHeic) {
+          setProcessingStatus(`Converting HEIC image (${i + 1}/${validFiles.length}): "${file.name}"...`);
+          imageToCompress = await convertHeicToJpeg(file);
+        } else {
+          setProcessingStatus(`Processing image (${i + 1}/${validFiles.length}): "${file.name}"...`);
+        }
+
+        const compressed = await compressImage(imageToCompress, file.name);
+        results.push(compressed);
+      }
+
       const newImages = results.map((r, idx) => ({
         id: `img-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 9)}`,
         name: r.name,
@@ -101,7 +157,11 @@ export default function MenuBuilderPage() {
       }));
       setUploadedImages((current) => [...current, ...newImages]);
     } catch (err) {
-      setError("Could not read one or more menu images.");
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Could not read one or more menu images.");
+    } finally {
+      setIsProcessingFiles(false);
+      setProcessingStatus("");
     }
   }
 
@@ -207,52 +267,60 @@ export default function MenuBuilderPage() {
             <h2>Upload your menu photo(s)</h2>
             <p style={{ marginBottom: "16px" }}>JPG, PNG, HEIC - max 10 MB per image. Select multiple to scan them together.</p>
 
-            <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
-              <label
-                className="primary-button lavender-button"
-                style={{
-                  position: "relative",
-                  overflow: "hidden",
-                  cursor: "pointer",
-                  userSelect: "none",
-                  WebkitUserSelect: "none",
-                  display: "inline-flex",
-                  alignItems: "center"
-                }}
-              >
-                <UploadCloud size={18} style={{ marginRight: "8px" }} />
-                Select Photo(s)
-                <input
-                  id="menu-upload"
-                  type="file"
-                  multiple
-                  accept="image/jpeg,image/png,image/heic,image/webp"
+            {isProcessingFiles ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", margin: "16px 0" }}>
+                <Loader2 className="animate-spin" size={28} style={{ color: "var(--coffee)" }} />
+                <p style={{ fontFamily: "var(--font-accent)", fontWeight: "bold", color: "var(--coffee)", fontSize: "18px" }}>
+                  {processingStatus}
+                </p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+                <label
+                  className="primary-button lavender-button"
                   style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "100%",
-                    height: "100%",
-                    opacity: 0,
-                    cursor: "pointer"
+                    position: "relative",
+                    overflow: "hidden",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    WebkitUserSelect: "none",
+                    display: "inline-flex",
+                    alignItems: "center"
                   }}
-                  onChange={handleFileChange}
-                />
-              </label>
-
-
-              {uploadedImages.length > 0 ? (
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={handleStartExtraction}
-                  style={{ background: "var(--ink)", color: "white" }}
                 >
-                  <Sparkles size={18} style={{ marginRight: "8px" }} />
-                  Extract Menu with AI ({uploadedImages.length})
-                </button>
-              ) : null}
-            </div>
+                  <UploadCloud size={18} style={{ marginRight: "8px" }} />
+                  Select Photo(s)
+                  <input
+                    id="menu-upload"
+                    type="file"
+                    multiple
+                    accept="image/jpeg,image/png,image/heic,image/webp"
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      height: "100%",
+                      opacity: 0,
+                      cursor: "pointer"
+                    }}
+                    onChange={handleFileChange}
+                  />
+                </label>
+
+                {uploadedImages.length > 0 ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={handleStartExtraction}
+                    style={{ background: "var(--ink)", color: "white" }}
+                  >
+                    <Sparkles size={18} style={{ marginRight: "8px" }} />
+                    Extract Menu with AI ({uploadedImages.length})
+                  </button>
+                ) : null}
+              </div>
+            )}
 
             {uploadedImages.length > 0 ? (
               <div style={{ marginTop: "24px" }}>
