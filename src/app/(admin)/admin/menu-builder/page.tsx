@@ -208,23 +208,38 @@ export default function MenuBuilderPage() {
             <p style={{ marginBottom: "16px" }}>JPG, PNG, HEIC - max 10 MB per image. Select multiple to scan them together.</p>
 
             <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
-              <button
-                type="button"
+              <label
                 className="primary-button lavender-button"
-                onClick={() => document.getElementById("menu-upload")?.click()}
-                style={{ cursor: "pointer" }}
+                style={{
+                  position: "relative",
+                  overflow: "hidden",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  WebkitUserSelect: "none",
+                  display: "inline-flex",
+                  alignItems: "center"
+                }}
               >
                 <UploadCloud size={18} style={{ marginRight: "8px" }} />
                 Select Photo(s)
-              </button>
-              <input
-                id="menu-upload"
-                type="file"
-                multiple
-                accept="image/jpeg,image/png,image/heic,image/webp"
-                style={{ display: "none" }}
-                onChange={handleFileChange}
-              />
+                <input
+                  id="menu-upload"
+                  type="file"
+                  multiple
+                  accept="image/jpeg,image/png,image/heic,image/webp"
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: "100%",
+                    opacity: 0,
+                    cursor: "pointer"
+                  }}
+                  onChange={handleFileChange}
+                />
+              </label>
+
 
               {uploadedImages.length > 0 ? (
                 <button
