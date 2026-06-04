@@ -27,7 +27,7 @@ export async function GET() {
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from("brewboard_menu_items")
-      .select("id,name,description,price,category,image_url,accent")
+      .select("id,name,description,price,category,image_url,accent,sort_order")
       .eq("is_active", true)
       .order("sort_order", { ascending: true })
       .order("created_at", { ascending: true });
@@ -96,7 +96,7 @@ export async function POST(request: Request) {
     const { data, error } = await supabase
       .from("brewboard_menu_items")
       .insert(rows)
-      .select("id,name,description,price,category,image_url,accent")
+      .select("id,name,description,price,category,image_url,accent,sort_order")
       .order("sort_order", { ascending: true });
 
     if (error) throw error;
@@ -183,7 +183,7 @@ export async function PUT(request: Request) {
     // Return the new active menu
     const { data, error } = await supabase
       .from("brewboard_menu_items")
-      .select("id,name,description,price,category,image_url,accent")
+      .select("id,name,description,price,category,image_url,accent,sort_order")
       .eq("is_active", true)
       .order("sort_order", { ascending: true })
       .order("created_at", { ascending: true });
