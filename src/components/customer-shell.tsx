@@ -3,7 +3,7 @@
 import { Coffee, ClipboardList, Home, LogOut, ShoppingBag, Users, Check, AlertCircle, Info, Heart, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { type ReactNode, useCallback } from "react";
+import { type ReactNode, useCallback, useEffect } from "react";
 
 import { useCartStore } from "@/stores/cart.store";
 import { useTableStore } from "@/stores/table.store";
@@ -20,8 +20,44 @@ export function CustomerShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const itemCount = useCartStore((state) => state.lines.reduce((total, line) => total + line.quantity, 0));
   const { toasts, removeToast } = useToastStore();
+  const addToast = useToastStore((state) => state.addToast);
   const router = useRouter();
+  const activeTable = useTableStore((state) => state.activeTable);
   const setActiveTable = useTableStore((state) => state.setActiveTable);
+
+  useEffect(() => {
+    if (!activeTable?.id) return;
+
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`table-session-status-${activeTable.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "brewboard_table_sessions",
+          filter: `id=eq.${activeTable.id}`
+        },
+        async (payload: any) => {
+          if (payload.new && payload.new.is_closed) {
+            try {
+              await fetch("/api/tables/user-session", { method: "DELETE" });
+            } catch (err) {
+              console.error("Failed to clear backend user session on external close:", err);
+            }
+            setActiveTable(null);
+            addToast("This table session has been completed and closed. Thank you!", "info");
+            router.push("/table");
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [activeTable?.id, setActiveTable, addToast, router]);
 
   const handleSignOut = useCallback(async () => {
     const supabase = createClient();

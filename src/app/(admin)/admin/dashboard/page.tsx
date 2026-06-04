@@ -123,6 +123,14 @@ export default function AdminDashboardPage() {
     }
   }
 
+  async function closeTableById(id: string) {
+    setActionError("");
+    const success = await closeTable(id);
+    if (!success) {
+      setActionError("Could not close this table.");
+    }
+  }
+
   return (
     <div className="admin-page">
       <header className="admin-header">
@@ -139,9 +147,9 @@ export default function AdminDashboardPage() {
           {hasNewOrder ? "New order received" : "Realtime queue live"}
         </button>
       </header>
-
+ 
       {actionError ? <p className="form-error">{actionError}</p> : null}
-
+ 
       {isLoading ? (
         <p>Loading dashboard...</p>
       ) : (
@@ -154,7 +162,7 @@ export default function AdminDashboardPage() {
                 const tableOrders = orders.filter(
                   (order) => order.tableSessionId === table.id && order.status !== "complete"
                 );
-
+ 
                 return (
                   <article
                     className={selectedTableIdResolved === table.id ? "table-card selected" : "table-card"}
@@ -174,12 +182,22 @@ export default function AdminDashboardPage() {
                       ))}
                       {tableOrders.length > 3 ? <li>+ {tableOrders.length - 3} more</li> : null}
                     </ul>
-                    <div className="table-card-actions">
+                    <div className="table-card-actions" style={{ display: "flex", gap: "8px" }}>
                       <button className="ghost-button" type="button" onClick={() => setSelectedTableId(table.id)}>
                         View Details
                       </button>
-                      <button className="accent-button" type="button" onClick={() => setSelectedTableId(table.id)}>
-                        Send Love
+                      <button
+                        className="ghost-button"
+                        style={{ borderColor: "#c44", color: "#c44" }}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Are you sure you want to close Table ${table.tableNumber}?`)) {
+                            closeTableById(table.id);
+                          }
+                        }}
+                      >
+                        Close Table
                       </button>
                     </div>
                   </article>

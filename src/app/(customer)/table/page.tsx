@@ -1,14 +1,15 @@
 "use client";
 
-import { ArrowRight, Copy, DoorOpen, Hash, LogOut, Users } from "lucide-react";
+import { ArrowRight, Check, Copy, CreditCard, DoorOpen, Hash, LogOut, QrCode, Smartphone, Users } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { createClient } from "@/lib/supabase/client";
 import { useTableStore } from "@/stores/table.store";
 import { useToastStore } from "@/stores/toasts.store";
+import { formatMoney } from "@/lib/utils";
 import type { Order, TableSession } from "@/types/brewboard";
 import { DoodleCup } from "@/components/doodle";
 
@@ -18,11 +19,67 @@ export default function TablePage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
+  const [allOrders, setAllOrders] = useState<Order[]>([]);
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState("card");
+  const [paymentState, setPaymentState] = useState<"idle" | "processing" | "success">("idle");
   const [sessionChecked, setSessionChecked] = useState(false);
   const { user, isLoading: authLoading } = useAuthUser();
+
+  const tableTotal = useMemo(() => {
+    return allOrders.reduce((sum, order) => {
+      const orderSum = order.items.reduce((itemSum, item) => itemSum + item.price * item.quantity, 0);
+      return sum + orderSum;
+    }, 0);
+  }, [allOrders]);
   const { activeTable, customerName, setCustomerName, setActiveTable } = useTableStore();
   const addToast = useToastStore((state) => state.addToast);
   const router = useRouter();
+
+  async function leaveTable() {
+    try {
+      await fetch("/api/tables/user-session", { method: "DELETE" });
+    } catch (err) {
+      console.error("Failed to clear backend user session:", err);
+    }
+    setActiveTable(null);
+    addToast("Left the table. You can create or join a new one.", "info");
+  }
+
+  async function simulatePaymentAndLeave() {
+    if (!activeTable) return;
+    setPaymentState("processing");
+
+    // Wait 1.5s to simulate payment authorization
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    setPaymentState("success");
+
+    // Wait 1.2s to show success state
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    try {
+      // 1. Close table session in database
+      const response = await fetch("/api/tables", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: activeTable.id })
+      });
+      if (!response.ok) throw new Error("Could not close table in db");
+
+      // 2. Clear backend user session mapping
+      await fetch("/api/tables/user-session", { method: "DELETE" });
+    } catch (err) {
+      console.error("Failed to close/leave table during payment checkout:", err);
+    }
+
+    // 3. Clear local Zustand state and redirect
+    setActiveTable(null);
+    setIsPaymentOpen(false);
+    setPaymentState("idle");
+    addToast("Table bill paid successfully! Left the table.", "success");
+    router.push("/table");
+  }
 
   async function handleSignOut() {
     const supabase = createClient();
@@ -73,6 +130,7 @@ export default function TablePage() {
   useEffect(() => {
     if (!activeTable) {
       setActiveOrders([]);
+      setAllOrders([]);
       return;
     }
 
@@ -83,6 +141,7 @@ export default function TablePage() {
           const body = await response.json();
           if (body.orders) {
             setActiveOrders(body.orders.filter((o: any) => o.status !== "complete"));
+            setAllOrders(body.orders);
           }
         }
       } catch (err) {
@@ -265,14 +324,14 @@ export default function TablePage() {
               className="secondary-button"
               type="button"
               style={{ width: "100%", marginTop: "8px" }}
-              onClick={async () => {
-                try {
-                  await fetch("/api/tables/user-session", { method: "DELETE" });
-                } catch (err) {
-                  console.error("Failed to clear backend user session:", err);
+              onClick={() => {
+                if (tableTotal > 0) {
+                  setIsPaymentOpen(true);
+                  setPaymentState("idle");
+                  setPaymentMethod("card");
+                } else {
+                  leaveTable();
                 }
-                setActiveTable(null);
-                addToast("Left the table. You can create or join a new one.", "info");
               }}
             >
               Leave This Table
@@ -330,6 +389,92 @@ export default function TablePage() {
           </div>
         </section>
       ) : null}
+
+      {isPaymentOpen && (
+        <div className="payment-overlay">
+          <div className="payment-modal">
+            <div className="payment-modal-header">
+              <h2>Payment Simulation</h2>
+              <p>BrewBoard Café • Table {activeTable?.tableNumber}</p>
+            </div>
+
+            {paymentState === "idle" && (
+              <>
+                <div style={{ textAlign: "center", fontSize: "16px", color: "var(--ink)", padding: "12px 0" }}>
+                  Total Amount to Pay: <strong style={{ fontSize: "22px", display: "block", marginTop: "4px" }}>{formatMoney(tableTotal)}</strong>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <span style={{ fontSize: "14px", fontWeight: "bold" }}>Select Simulated Method</span>
+                  <div className="payment-option-grid">
+                    <button
+                      type="button"
+                      className={`payment-option-card ${paymentMethod === "card" ? "active" : ""}`}
+                      onClick={() => setPaymentMethod("card")}
+                    >
+                      <CreditCard size={24} />
+                      <span>Card</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`payment-option-card ${paymentMethod === "upi" ? "active" : ""}`}
+                      onClick={() => setPaymentMethod("upi")}
+                    >
+                      <Smartphone size={24} />
+                      <span>UPI</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`payment-option-card ${paymentMethod === "qr" ? "active" : ""}`}
+                      onClick={() => setPaymentMethod("qr")}
+                    >
+                      <QrCode size={24} />
+                      <span>QR Code</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="payment-modal-footer" style={{ marginTop: "12px" }}>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    style={{ width: "100%" }}
+                    onClick={simulatePaymentAndLeave}
+                  >
+                    Simulate Success Pay
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    style={{ width: "100%" }}
+                    onClick={() => setIsPaymentOpen(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+
+            {paymentState === "processing" && (
+              <div className="payment-status-wrapper">
+                <div className="payment-spinner" />
+                <strong style={{ fontSize: "18px" }}>Authorizing Payment...</strong>
+                <p style={{ color: "rgba(0,0,0,0.6)" }}>Simulating secure transaction gateway</p>
+              </div>
+            )}
+
+            {paymentState === "success" && (
+              <div className="payment-status-wrapper">
+                <div className="payment-success-icon">
+                  <Check size={36} strokeWidth={3} />
+                </div>
+                <strong style={{ fontSize: "20px", color: "var(--espresso)" }}>Payment Successful!</strong>
+                <p style={{ color: "rgba(0,0,0,0.6)" }}>Completing your table check-out...</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
