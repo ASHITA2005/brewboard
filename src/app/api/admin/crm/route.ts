@@ -50,6 +50,8 @@ async function callMcpTool(toolName: string, args: Record<string, any>): Promise
       }
     }, 15000);
 
+    let currentEvent = "";
+
     const read = async () => {
       try {
         while (!completed) {
@@ -66,15 +68,16 @@ async function callMcpTool(toolName: string, args: Record<string, any>): Promise
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
 
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            if (line.startsWith("event: endpoint")) {
-              const nextLine = lines[i + 1]?.trim();
-              if (nextLine && nextLine.startsWith("data: ")) {
-                const dataContent = nextLine.slice(6).trim();
-                messageUrl = `${mcpUrl}${dataContent}`;
-                i++; // Skip next line
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("event: ")) {
+              currentEvent = trimmed.slice(7).trim();
+            } else if (trimmed.startsWith("data: ")) {
+              const dataContent = trimmed.slice(6).trim();
 
+              if (currentEvent === "endpoint" || dataContent.startsWith("/message")) {
+                messageUrl = `${mcpUrl}${dataContent}`;
+                
                 // Send the POST tool call
                 const toolCallBody = {
                   jsonrpc: "2.0",
@@ -101,13 +104,7 @@ async function callMcpTool(toolName: string, args: Record<string, any>): Promise
                   reject(new Error(`Failed to post tool call: ${postRes.status} ${postRes.statusText}`));
                   return;
                 }
-              }
-            } else if (line.startsWith("event: message")) {
-              const nextLine = lines[i + 1]?.trim();
-              if (nextLine && nextLine.startsWith("data: ")) {
-                const dataContent = nextLine.slice(6).trim();
-                i++; // Skip next line
-
+              } else if (currentEvent === "message" || dataContent.startsWith("{")) {
                 try {
                   const msg = JSON.parse(dataContent);
                   if (msg.id === requestId) {
@@ -121,53 +118,11 @@ async function callMcpTool(toolName: string, args: Record<string, any>): Promise
                     return;
                   }
                 } catch (e) {
-                  // Ignore JSON parse errors for incomplete chunks
+                  // Ignore JSON parse errors for incomplete/unrelated chunks
                 }
               }
-            } else if (line.startsWith("data: ")) {
-              const dataContent = line.slice(6).trim();
-              if (dataContent.startsWith("/message")) {
-                messageUrl = `${mcpUrl}${dataContent}`;
-                const toolCallBody = {
-                  jsonrpc: "2.0",
-                  id: requestId,
-                  method: "tools/call",
-                  params: {
-                    name: toolName,
-                    arguments: args
-                  }
-                };
-
-                const postRes = await fetch(messageUrl, {
-                  method: "POST",
-                  headers: {
-                    "Authorization": `Bearer ${apiKey}`,
-                    "Content-Type": "application/json"
-                  },
-                  body: JSON.stringify(toolCallBody)
-                });
-
-                if (!postRes.ok) {
-                  cleanup();
-                  clearTimeout(timeout);
-                  reject(new Error(`Failed to post tool call: ${postRes.status}`));
-                  return;
-                }
-              } else {
-                try {
-                  const msg = JSON.parse(dataContent);
-                  if (msg.id === requestId) {
-                    cleanup();
-                    clearTimeout(timeout);
-                    if (msg.error) {
-                      reject(new Error(msg.error.message || JSON.stringify(msg.error)));
-                    } else {
-                      resolve(msg.result);
-                    }
-                    return;
-                  }
-                } catch (e) {}
-              }
+            } else if (trimmed === "") {
+              currentEvent = "";
             }
           }
         }
