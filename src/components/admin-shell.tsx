@@ -1,6 +1,6 @@
 "use client";
 
-import { Archive, Coffee, LayoutDashboard, LogOut, WandSparkles } from "lucide-react";
+import { Archive, BarChart3, Coffee, LayoutDashboard, LogOut, WandSparkles } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
@@ -11,6 +11,7 @@ const navItems = [
   { href: "/admin/dashboard", label: "Orders", icon: LayoutDashboard },
   { href: "/admin/menu-builder", label: "Menu Builder", icon: WandSparkles },
   { href: "/admin/live-menu", label: "Live Menu", icon: Coffee },
+  { href: "/admin/crm", label: "CRM & Analytics", icon: BarChart3 },
   { href: "/admin/dashboard#archive", label: "Archive", icon: Archive }
 ];
 
