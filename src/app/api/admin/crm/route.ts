@@ -147,28 +147,16 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Missing start_date or end_date parameters." }, { status: 400 });
     }
 
-    // Call all 9 tools in parallel from the MCP server
-    const [
-      revenueRes,
-      peakHoursRes,
-      ordersByTableRes,
-      mostOrderedItemsRes,
-      busiestDaysRes,
-      tableTurnoverRes,
-      aovTrendRes,
-      completionTimeRes,
-      outreachHistoryRes
-    ] = await Promise.all([
-      callMcpTool("get_revenue_summary", { start_date, end_date }),
-      callMcpTool("get_peak_hours", { start_date, end_date }),
-      callMcpTool("get_orders_by_table", { start_date, end_date }),
-      callMcpTool("get_most_ordered_items", { start_date, end_date, limit: 10 }),
-      callMcpTool("get_busiest_days", { start_date, end_date }),
-      callMcpTool("get_table_turnover", { start_date, end_date }),
-      callMcpTool("get_average_order_value", { start_date, end_date }),
-      callMcpTool("get_order_completion_time", { start_date, end_date }),
-      callMcpTool("get_outreach_history", { limit: 50 })
-    ]);
+    // Call all 9 tools sequentially to prevent socket pool exhaustion
+    const revenueRes = await callMcpTool("get_revenue_summary", { start_date, end_date });
+    const peakHoursRes = await callMcpTool("get_peak_hours", { start_date, end_date });
+    const ordersByTableRes = await callMcpTool("get_orders_by_table", { start_date, end_date });
+    const mostOrderedItemsRes = await callMcpTool("get_most_ordered_items", { start_date, end_date, limit: 10 });
+    const busiestDaysRes = await callMcpTool("get_busiest_days", { start_date, end_date });
+    const tableTurnoverRes = await callMcpTool("get_table_turnover", { start_date, end_date });
+    const aovTrendRes = await callMcpTool("get_average_order_value", { start_date, end_date });
+    const completionTimeRes = await callMcpTool("get_order_completion_time", { start_date, end_date });
+    const outreachHistoryRes = await callMcpTool("get_outreach_history", { limit: 50 });
 
     // Parse the results from JSON text string inside content[0].text
     const revenueSummary = JSON.parse(revenueRes.content[0].text);
