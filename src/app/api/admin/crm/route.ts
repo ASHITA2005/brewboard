@@ -1,12 +1,201 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import dns from "dns";
 
 export const dynamic = "force-dynamic";
 
-async function callMcpTool(toolName: string, args: Record<string, any>): Promise<any> {
-  const mcpUrl = "https://crmmcp-production-3555.up.railway.app";
-  const apiKey = "test_mcp_api_key_for_brewboard_crm_server";
+// Custom DNS Resolver fallback for local development where *.up.railway.app may fail to resolve
+const originalLookup = dns.lookup;
+const resolver = new dns.Resolver();
+resolver.setServers(["8.8.8.8", "1.1.1.1"]);
 
+dns.lookup = function (
+  hostname: string,
+  options: any,
+  callback: (err: NodeJS.ErrnoException | null, address: string | any[], family?: number) => void
+) {
+  const cb = typeof options === "function" ? options : callback;
+  const opts = typeof options === "object" ? options : {};
+
+  originalLookup(hostname, options, (err, address, family) => {
+    if (err && hostname === "crmmcp-production-3555.up.railway.app") {
+      resolver.resolve4(hostname, (resolveErr, addresses) => {
+        if (resolveErr || !addresses || addresses.length === 0) {
+          cb(err, address, family);
+        } else {
+          const ip = addresses[0];
+          if (opts.all) {
+            cb(null, [{ address: ip, family: 4 }]);
+          } else {
+            cb(null, ip, 4);
+          }
+        }
+      });
+    } else {
+      cb(err, address, family);
+    }
+  });
+} as any;
+
+const mcpUrl = "https://crmmcp-production-3555.up.railway.app";
+const apiKey = "test_mcp_api_key_for_brewboard_crm_server";
+
+async function callMcpToolsMultiplexed(
+  tools: Array<{ key: string; name: string; args: Record<string, any> }>
+): Promise<Record<string, any>> {
+  // 1. Connect to SSE
+  const sseResponse = await fetch(`${mcpUrl}/sse`, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "text/event-stream"
+    }
+  });
+
+  if (!sseResponse.ok) {
+    throw new Error(`Failed to connect to MCP server SSE: ${sseResponse.status} ${sseResponse.statusText}`);
+  }
+
+  const reader = sseResponse.body?.getReader();
+  if (!reader) {
+    throw new Error("No body reader on SSE response");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const results: Record<string, any> = {};
+  const pendingRequests = new Map<number, { key: string; name: string }>();
+
+  let idCounter = 1;
+  const requestIdToKey: Record<number, string> = {};
+  tools.forEach(t => {
+    requestIdToKey[idCounter] = t.key;
+    pendingRequests.set(idCounter, { key: t.key, name: t.name });
+    idCounter++;
+  });
+
+  return new Promise((resolve, reject) => {
+    let completed = false;
+
+    const cleanup = () => {
+      completed = true;
+      try {
+        reader.releaseLock();
+      } catch (e) {}
+      try {
+        sseResponse.body?.cancel();
+      } catch (e) {}
+    };
+
+    // Timeout to prevent hanging forever
+    const timeout = setTimeout(() => {
+      if (!completed) {
+        cleanup();
+        reject(new Error(`Timeout waiting for tools: ${Array.from(pendingRequests.values()).map(r => r.name).join(", ")}`));
+      }
+    }, 15000);
+
+    let currentEvent = "";
+
+    const read = async () => {
+      try {
+        while (!completed) {
+          const { value, done } = await reader.read();
+          if (done) {
+            if (!completed) {
+              cleanup();
+              reject(new Error("Stream closed before receiving all responses"));
+            }
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("event: ")) {
+              currentEvent = trimmed.slice(7).trim();
+            } else if (trimmed.startsWith("data: ")) {
+              const dataContent = trimmed.slice(6).trim();
+
+              if (currentEvent === "endpoint" || dataContent.startsWith("/message")) {
+                const messageUrl = `${mcpUrl}${dataContent}`;
+                
+                // Send all POST tool calls in parallel
+                for (const tool of tools) {
+                  const reqId = Object.keys(requestIdToKey).find(k => requestIdToKey[Number(k)] === tool.key);
+                  if (!reqId) continue;
+
+                  const toolCallBody = {
+                    jsonrpc: "2.0",
+                    id: Number(reqId),
+                    method: "tools/call",
+                    params: {
+                      name: tool.name,
+                      arguments: tool.args
+                    }
+                  };
+
+                  fetch(messageUrl, {
+                    method: "POST",
+                    headers: {
+                      "Authorization": `Bearer ${apiKey}`,
+                      "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(toolCallBody)
+                  }).then(async (postRes) => {
+                    if (!postRes.ok) {
+                      console.error(`Failed to post tool call ${tool.name}: ${postRes.status} ${postRes.statusText}`);
+                    }
+                  }).catch(err => {
+                    console.error(`Error posting tool call ${tool.name}:`, err);
+                  });
+                }
+              } else if (currentEvent === "message" || dataContent.startsWith("{")) {
+                try {
+                  const msg = JSON.parse(dataContent);
+                  if (msg.id && requestIdToKey[msg.id]) {
+                    const key = requestIdToKey[msg.id];
+                    
+                    if (msg.error) {
+                      cleanup();
+                      clearTimeout(timeout);
+                      reject(new Error(`Tool ${pendingRequests.get(msg.id)?.name} failed: ${msg.error.message || JSON.stringify(msg.error)}`));
+                      return;
+                    }
+
+                    results[key] = msg.result;
+                    pendingRequests.delete(msg.id);
+
+                    if (pendingRequests.size === 0) {
+                      cleanup();
+                      clearTimeout(timeout);
+                      resolve(results);
+                      return;
+                    }
+                  }
+                } catch (e) {
+                  // Ignore JSON parse errors for incomplete/unrelated chunks
+                }
+              }
+            } else if (trimmed === "") {
+              currentEvent = "";
+            }
+          }
+        }
+      } catch (err) {
+        cleanup();
+        clearTimeout(timeout);
+        reject(err);
+      }
+    };
+
+    read();
+  });
+}
+
+async function callMcpTool(toolName: string, args: Record<string, any>): Promise<any> {
   // 1. Connect to SSE
   const sseResponse = await fetch(`${mcpUrl}/sse`, {
     headers: {
@@ -147,27 +336,29 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Missing start_date or end_date parameters." }, { status: 400 });
     }
 
-    // Call all 9 tools sequentially to prevent socket pool exhaustion
-    const revenueRes = await callMcpTool("get_revenue_summary", { start_date, end_date });
-    const peakHoursRes = await callMcpTool("get_peak_hours", { start_date, end_date });
-    const ordersByTableRes = await callMcpTool("get_orders_by_table", { start_date, end_date });
-    const mostOrderedItemsRes = await callMcpTool("get_most_ordered_items", { start_date, end_date, limit: 10 });
-    const busiestDaysRes = await callMcpTool("get_busiest_days", { start_date, end_date });
-    const tableTurnoverRes = await callMcpTool("get_table_turnover", { start_date, end_date });
-    const aovTrendRes = await callMcpTool("get_average_order_value", { start_date, end_date });
-    const completionTimeRes = await callMcpTool("get_order_completion_time", { start_date, end_date });
-    const outreachHistoryRes = await callMcpTool("get_outreach_history", { limit: 50 });
+    // Call all 9 tools multiplexed over a single SSE session to avoid socket exhaustion and timeouts
+    const results = await callMcpToolsMultiplexed([
+      { key: "revenue", name: "get_revenue_summary", args: { start_date, end_date } },
+      { key: "peakHours", name: "get_peak_hours", args: { start_date, end_date } },
+      { key: "ordersByTable", name: "get_orders_by_table", args: { start_date, end_date } },
+      { key: "mostOrderedItems", name: "get_most_ordered_items", args: { start_date, end_date, limit: 10 } },
+      { key: "busiestDays", name: "get_busiest_days", args: { start_date, end_date } },
+      { key: "tableTurnover", name: "get_table_turnover", args: { start_date, end_date } },
+      { key: "aovTrend", name: "get_average_order_value", args: { start_date, end_date } },
+      { key: "completionTime", name: "get_order_completion_time", args: { start_date, end_date } },
+      { key: "outreachHistory", name: "get_outreach_history", args: { limit: 50 } }
+    ]);
 
     // Parse the results from JSON text string inside content[0].text
-    const revenueSummary = JSON.parse(revenueRes.content[0].text);
-    const peakHoursData = JSON.parse(peakHoursRes.content[0].text);
-    const ordersByTableData = JSON.parse(ordersByTableRes.content[0].text);
-    const mostOrderedItemsData = JSON.parse(mostOrderedItemsRes.content[0].text);
-    const busiestDaysData = JSON.parse(busiestDaysRes.content[0].text);
-    const tableTurnoverData = JSON.parse(tableTurnoverRes.content[0].text);
-    const aovTrendData = JSON.parse(aovTrendRes.content[0].text);
-    const completionTimeData = JSON.parse(completionTimeRes.content[0].text);
-    const outreachHistoryRaw = JSON.parse(outreachHistoryRes.content[0].text);
+    const revenueSummary = JSON.parse(results.revenue.content[0].text);
+    const peakHoursData = JSON.parse(results.peakHours.content[0].text);
+    const ordersByTableData = JSON.parse(results.ordersByTable.content[0].text);
+    const mostOrderedItemsData = JSON.parse(results.mostOrderedItems.content[0].text);
+    const busiestDaysData = JSON.parse(results.busiestDays.content[0].text);
+    const tableTurnoverData = JSON.parse(results.tableTurnover.content[0].text);
+    const aovTrendData = JSON.parse(results.aovTrend.content[0].text);
+    const completionTimeData = JSON.parse(results.completionTime.content[0].text);
+    const outreachHistoryRaw = JSON.parse(results.outreachHistory.content[0].text);
 
     // Join customer profiles in memory for admin dashboard view
     const supabase = createAdminClient();
