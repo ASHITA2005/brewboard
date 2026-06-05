@@ -3,17 +3,184 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 
-function getOrderTotal(order: any) {
-  if (!order.items || !Array.isArray(order.items)) return 0;
-  return order.items.reduce((sum: number, item: any) => sum + (Number(item.price ?? 0) * Number(item.quantity ?? 0)), 0);
-}
+async function callMcpTool(toolName: string, args: Record<string, any>): Promise<any> {
+  const mcpUrl = "https://crmmcp-production-3555.up.railway.app";
+  const apiKey = "test_mcp_api_key_for_brewboard_crm_server";
 
-function toIstDate(dateStr: string) {
-  const utcDate = new Date(dateStr);
-  return new Date(utcDate.getTime() + 5.5 * 60 * 60 * 1000);
-}
+  // 1. Connect to SSE
+  const sseResponse = await fetch(`${mcpUrl}/sse`, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "text/event-stream"
+    }
+  });
 
-const eod = (d: string) => `${d}T23:59:59.999Z`;
+  if (!sseResponse.ok) {
+    throw new Error(`Failed to connect to MCP server SSE: ${sseResponse.status} ${sseResponse.statusText}`);
+  }
+
+  const reader = sseResponse.body?.getReader();
+  if (!reader) {
+    throw new Error("No body reader on SSE response");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let messageUrl = "";
+  const requestId = Math.floor(Math.random() * 1000000);
+
+  return new Promise((resolve, reject) => {
+    let completed = false;
+
+    const cleanup = () => {
+      completed = true;
+      try {
+        reader.releaseLock();
+      } catch (e) {}
+      try {
+        sseResponse.body?.cancel();
+      } catch (e) {}
+    };
+
+    // Timeout to prevent hanging forever
+    const timeout = setTimeout(() => {
+      if (!completed) {
+        cleanup();
+        reject(new Error(`Timeout waiting for response from tool: ${toolName}`));
+      }
+    }, 15000);
+
+    const read = async () => {
+      try {
+        while (!completed) {
+          const { value, done } = await reader.read();
+          if (done) {
+            if (!completed) {
+              cleanup();
+              reject(new Error("Stream closed before receiving response"));
+            }
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.startsWith("event: endpoint")) {
+              const nextLine = lines[i + 1]?.trim();
+              if (nextLine && nextLine.startsWith("data: ")) {
+                const dataContent = nextLine.slice(6).trim();
+                messageUrl = `${mcpUrl}${dataContent}`;
+                i++; // Skip next line
+
+                // Send the POST tool call
+                const toolCallBody = {
+                  jsonrpc: "2.0",
+                  id: requestId,
+                  method: "tools/call",
+                  params: {
+                    name: toolName,
+                    arguments: args
+                  }
+                };
+
+                const postRes = await fetch(messageUrl, {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "Content-Type": "application/json"
+                  },
+                  body: JSON.stringify(toolCallBody)
+                });
+
+                if (!postRes.ok) {
+                  cleanup();
+                  clearTimeout(timeout);
+                  reject(new Error(`Failed to post tool call: ${postRes.status} ${postRes.statusText}`));
+                  return;
+                }
+              }
+            } else if (line.startsWith("event: message")) {
+              const nextLine = lines[i + 1]?.trim();
+              if (nextLine && nextLine.startsWith("data: ")) {
+                const dataContent = nextLine.slice(6).trim();
+                i++; // Skip next line
+
+                try {
+                  const msg = JSON.parse(dataContent);
+                  if (msg.id === requestId) {
+                    cleanup();
+                    clearTimeout(timeout);
+                    if (msg.error) {
+                      reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+                    } else {
+                      resolve(msg.result);
+                    }
+                    return;
+                  }
+                } catch (e) {
+                  // Ignore JSON parse errors for incomplete chunks
+                }
+              }
+            } else if (line.startsWith("data: ")) {
+              const dataContent = line.slice(6).trim();
+              if (dataContent.startsWith("/message")) {
+                messageUrl = `${mcpUrl}${dataContent}`;
+                const toolCallBody = {
+                  jsonrpc: "2.0",
+                  id: requestId,
+                  method: "tools/call",
+                  params: {
+                    name: toolName,
+                    arguments: args
+                  }
+                };
+
+                const postRes = await fetch(messageUrl, {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "Content-Type": "application/json"
+                  },
+                  body: JSON.stringify(toolCallBody)
+                });
+
+                if (!postRes.ok) {
+                  cleanup();
+                  clearTimeout(timeout);
+                  reject(new Error(`Failed to post tool call: ${postRes.status}`));
+                  return;
+                }
+              } else {
+                try {
+                  const msg = JSON.parse(dataContent);
+                  if (msg.id === requestId) {
+                    cleanup();
+                    clearTimeout(timeout);
+                    if (msg.error) {
+                      reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+                    } else {
+                      resolve(msg.result);
+                    }
+                    return;
+                  }
+                } catch (e) {}
+              }
+            }
+          }
+        }
+      } catch (err) {
+        cleanup();
+        clearTimeout(timeout);
+        reject(err);
+      }
+    };
+
+    read();
+  });
+}
 
 export async function GET(request: Request) {
   try {
@@ -25,40 +192,43 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Missing start_date or end_date parameters." }, { status: 400 });
     }
 
-    const supabase = createAdminClient();
-
-    const [ordersResult, sessionsResult, menuItemsResult, messagesResult] = await Promise.all([
-      supabase
-        .from("brewboard_orders")
-        .select("created_at, completed_at, items, status, table_session_id")
-        .gte("created_at", start_date)
-        .lte("created_at", eod(end_date)),
-      supabase
-        .from("brewboard_table_sessions")
-        .select("id, table_number, created_at, closed_at, is_closed")
-        .gte("created_at", start_date)
-        .lte("created_at", eod(end_date)),
-      supabase
-        .from("brewboard_menu_items")
-        .select("name, category"),
-      supabase
-        .from("crm_messages")
-        .select("id, user_id, channel, subject, body, sent_at, triggered_by")
-        .order("sent_at", { ascending: false })
-        .limit(50)
+    // Call all 9 tools in parallel from the MCP server
+    const [
+      revenueRes,
+      peakHoursRes,
+      ordersByTableRes,
+      mostOrderedItemsRes,
+      busiestDaysRes,
+      tableTurnoverRes,
+      aovTrendRes,
+      completionTimeRes,
+      outreachHistoryRes
+    ] = await Promise.all([
+      callMcpTool("get_revenue_summary", { start_date, end_date }),
+      callMcpTool("get_peak_hours", { start_date, end_date }),
+      callMcpTool("get_orders_by_table", { start_date, end_date }),
+      callMcpTool("get_most_ordered_items", { start_date, end_date, limit: 10 }),
+      callMcpTool("get_busiest_days", { start_date, end_date }),
+      callMcpTool("get_table_turnover", { start_date, end_date }),
+      callMcpTool("get_average_order_value", { start_date, end_date }),
+      callMcpTool("get_order_completion_time", { start_date, end_date }),
+      callMcpTool("get_outreach_history", { limit: 50 })
     ]);
 
-    if (ordersResult.error) throw ordersResult.error;
-    if (sessionsResult.error) throw sessionsResult.error;
-    if (menuItemsResult.error) throw menuItemsResult.error;
-    if (messagesResult.error) throw messagesResult.error;
+    // Parse the results from JSON text string inside content[0].text
+    const revenueSummary = JSON.parse(revenueRes.content[0].text);
+    const peakHoursData = JSON.parse(peakHoursRes.content[0].text);
+    const ordersByTableData = JSON.parse(ordersByTableRes.content[0].text);
+    const mostOrderedItemsData = JSON.parse(mostOrderedItemsRes.content[0].text);
+    const busiestDaysData = JSON.parse(busiestDaysRes.content[0].text);
+    const tableTurnoverData = JSON.parse(tableTurnoverRes.content[0].text);
+    const aovTrendData = JSON.parse(aovTrendRes.content[0].text);
+    const completionTimeData = JSON.parse(completionTimeRes.content[0].text);
+    const outreachHistoryRaw = JSON.parse(outreachHistoryRes.content[0].text);
 
-    const orders = ordersResult.data ?? [];
-    const sessions = sessionsResult.data ?? [];
-    const menuItems = menuItemsResult.data ?? [];
-    const messages = messagesResult.data ?? [];
-
-    const userIds = Array.from(new Set(messages.map((m: any) => m.user_id).filter(Boolean)));
+    // Join customer profiles in memory for admin dashboard view
+    const supabase = createAdminClient();
+    const userIds = Array.from(new Set(outreachHistoryRaw.map((m: any) => m.user_id).filter(Boolean)));
     const profileMap: Record<string, { full_name: string | null; email: string | null; avatar_url: string | null }> = {};
     if (userIds.length > 0) {
       const { data: profiles, error: profilesError } = await supabase
@@ -76,167 +246,7 @@ export async function GET(request: Request) {
       }
     }
 
-    // 1. Revenue Summary
-    const totalOrders = orders.length;
-    const completedOrders = orders.filter(o => o.status === 'complete');
-    const totalRevenue = completedOrders.reduce((s, o) => s + getOrderTotal(o), 0);
-    const aov = completedOrders.length > 0 ? totalRevenue / completedOrders.length : 0;
-    const completionRate = totalOrders > 0 ? (completedOrders.length / totalOrders) * 100 : 0;
-
-    const revenueSummary = {
-      total_orders: totalOrders,
-      completed_orders: completedOrders.length,
-      pending_orders: totalOrders - completedOrders.length,
-      total_revenue_inr: Math.round(totalRevenue * 100) / 100,
-      average_order_value_inr: Math.round(aov * 100) / 100,
-      completion_rate_pct: Math.round(completionRate * 100) / 100
-    };
-
-    // 2. Peak Hours (IST)
-    const hours = Array.from({ length: 24 }, (_, h) => ({
-      hour: h,
-      label: `${String(h).padStart(2, '0')}:00`,
-      order_count: 0,
-      revenue_inr: 0,
-    }));
-    for (const order of orders) {
-      const istDate = toIstDate(order.created_at);
-      const istHour = istDate.getUTCHours();
-      hours[istHour].order_count++;
-      if (order.status === 'complete') {
-        hours[istHour].revenue_inr += getOrderTotal(order);
-      }
-    }
-    hours.forEach(h => { h.revenue_inr = Math.round(h.revenue_inr * 100) / 100 });
-
-    // 3. Orders by Table
-    const sessionMap: Record<string, string> = {};
-    sessions.forEach(s => { sessionMap[s.id] = s.table_number; });
-
-    const missingSessionIds = Array.from(new Set(orders.map(o => o.table_session_id).filter(id => id && !sessionMap[id])));
-    if (missingSessionIds.length > 0) {
-      const { data: extraSessions } = await supabase
-        .from("brewboard_table_sessions")
-        .select("id, table_number")
-        .in("id", missingSessionIds);
-      extraSessions?.forEach(s => { sessionMap[s.id] = s.table_number; });
-    }
-
-    const byTable: Record<string, { table_number: string; order_count: number; revenue_inr: number }> = {};
-    for (const order of orders) {
-      const num = sessionMap[order.table_session_id] ?? 'unknown';
-      if (!byTable[num]) byTable[num] = { table_number: num, order_count: 0, revenue_inr: 0 };
-      byTable[num].order_count++;
-      if (order.status === 'complete') {
-        byTable[num].revenue_inr += getOrderTotal(order);
-      }
-    }
-    const ordersByTable = Object.values(byTable)
-      .map(r => ({ ...r, revenue_inr: Math.round(r.revenue_inr * 100) / 100 }))
-      .sort((a, b) => b.revenue_inr - a.revenue_inr);
-
-    // 4. Most Ordered Items
-    const categoryMap: Record<string, string> = {};
-    menuItems.forEach(item => { categoryMap[item.name] = item.category; });
-
-    const byItem: Record<string, { name: string; category: string; total_quantity: number; total_revenue_inr: number }> = {};
-    for (const order of orders) {
-      if (!order.items || !Array.isArray(order.items)) continue;
-      for (const item of order.items) {
-        const name = item.name ?? 'unknown';
-        const cat = categoryMap[name] ?? 'unknown';
-        const qty = Number(item.quantity ?? 0);
-        const price = Number(item.price ?? 0);
-
-        if (!byItem[name]) {
-          byItem[name] = { name, category: cat, total_quantity: 0, total_revenue_inr: 0 };
-        }
-        byItem[name].total_quantity += qty;
-        if (order.status === 'complete') {
-          byItem[name].total_revenue_inr += qty * price;
-        }
-      }
-    }
-    const mostOrderedItems = Object.values(byItem)
-      .map(r => ({ ...r, total_revenue_inr: Math.round(r.total_revenue_inr * 100) / 100 }))
-      .sort((a, b) => b.total_quantity - a.total_quantity);
-
-    // 5. Busiest Days
-    const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-    const days = dayNames.map(name => ({ day: name, order_count: 0, revenue_inr: 0 }));
-    for (const order of orders) {
-      const istDate = toIstDate(order.created_at);
-      const dow = istDate.getUTCDay();
-      days[dow].order_count++;
-      if (order.status === 'complete') {
-        days[dow].revenue_inr += getOrderTotal(order);
-      }
-    }
-    days.forEach(d => { d.revenue_inr = Math.round(d.revenue_inr * 100) / 100 });
-
-    // 6. Table Turnover
-    const closedSessions = sessions.filter(s => s.is_closed && s.closed_at);
-    const turnoverByTable: Record<string, { table_number: string; session_count: number; total_minutes: number }> = {};
-    for (const session of closedSessions) {
-      const num = session.table_number ?? 'unknown';
-      const duration = (new Date(session.closed_at!).getTime() - new Date(session.created_at).getTime()) / 60000;
-      if (!turnoverByTable[num]) turnoverByTable[num] = { table_number: num, session_count: 0, total_minutes: 0 };
-      turnoverByTable[num].session_count++;
-      turnoverByTable[num].total_minutes += duration;
-    }
-    const tableTurnover = Object.values(turnoverByTable).map(r => ({
-      table_number: r.table_number,
-      session_count: r.session_count,
-      avg_duration_minutes: Math.round((r.total_minutes / r.session_count) * 10) / 10,
-    })).sort((a, b) => b.avg_duration_minutes - a.avg_duration_minutes);
-
-    const allDurations = closedSessions.map(s => (new Date(s.closed_at!).getTime() - new Date(s.created_at).getTime()) / 60000);
-    const globalAvgTurnoverMinutes = allDurations.length > 0 ? allDurations.reduce((a, b) => a + b, 0) / allDurations.length : 0;
-
-    // 7. Average Order Value (AOV) Daily Trend
-    const byDay: Record<string, { date: string; order_count: number; total_revenue: number }> = {};
-    for (const order of completedOrders) {
-      const istDate = toIstDate(order.created_at);
-      const day = istDate.toISOString().slice(0, 10);
-      if (!byDay[day]) byDay[day] = { date: day, order_count: 0, total_revenue: 0 };
-      byDay[day].order_count++;
-      byDay[day].total_revenue += getOrderTotal(order);
-    }
-    const aovDailyTrend = Object.values(byDay).map(d => ({
-      date: d.date,
-      order_count: d.order_count,
-      total_revenue_inr: Math.round(d.total_revenue * 100) / 100,
-      aov_inr: Math.round((d.total_revenue / d.order_count) * 100) / 100,
-    })).sort((a, b) => a.date.localeCompare(b.date));
-
-    // 8. Order Completion Time
-    const completedOrdersWithTime = completedOrders.filter(o => o.completed_at);
-    let kitchenMetrics = {
-      completed_orders: completedOrdersWithTime.length,
-      avg_minutes: 0,
-      median_minutes: 0,
-      p90_minutes: 0,
-      fastest_minutes: 0,
-      slowest_minutes: 0
-    };
-    if (completedOrdersWithTime.length > 0) {
-      const durations = completedOrdersWithTime.map(o => (new Date(o.completed_at!).getTime() - new Date(o.created_at).getTime()) / 60000);
-      durations.sort((a, b) => a - b);
-      const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
-      const median = durations[Math.floor(durations.length / 2)];
-      const p90 = durations[Math.floor(durations.length * 0.9)];
-      kitchenMetrics = {
-        completed_orders: completedOrdersWithTime.length,
-        avg_minutes: Math.round(avg * 10) / 10,
-        median_minutes: Math.round(median * 10) / 10,
-        p90_minutes: Math.round(p90 * 10) / 10,
-        fastest_minutes: Math.round(durations[0] * 10) / 10,
-        slowest_minutes: Math.round(durations[durations.length - 1] * 10) / 10
-      };
-    }
-
-    // 9. Outreach History with profile info joined
-    const outreachHistory = messages.map((m: any) => ({
+    const outreachHistory = outreachHistoryRaw.map((m: any) => ({
       id: m.id,
       user_id: m.user_id,
       channel: m.channel,
@@ -248,23 +258,30 @@ export async function GET(request: Request) {
     }));
 
     return NextResponse.json({
-      revenue_summary: revenueSummary,
-      peak_hours: hours,
-      orders_by_table: ordersByTable,
-      most_ordered_items: mostOrderedItems,
-      busiest_days: days,
-      table_turnover: {
-        global_avg_minutes: Math.round(globalAvgTurnoverMinutes * 10) / 10,
-        by_table: tableTurnover
+      revenue_summary: {
+        total_orders: revenueSummary.total_orders,
+        completed_orders: revenueSummary.completed_orders,
+        pending_orders: revenueSummary.pending_orders,
+        total_revenue_inr: revenueSummary.total_revenue_inr,
+        average_order_value_inr: revenueSummary.average_order_value_inr,
+        completion_rate_pct: revenueSummary.completion_rate_pct || 0
       },
-      aov_daily_trend: aovDailyTrend,
-      kitchen_performance: kitchenMetrics,
+      peak_hours: peakHoursData.all_hours || [],
+      orders_by_table: ordersByTableData.tables || [],
+      most_ordered_items: mostOrderedItemsData.top_items || [],
+      busiest_days: busiestDaysData.days_ranked || [],
+      table_turnover: {
+        global_avg_minutes: tableTurnoverData.global_avg_minutes,
+        by_table: tableTurnoverData.by_table || []
+      },
+      aov_daily_trend: aovTrendData.daily_trend || [],
+      kitchen_performance: completionTimeData,
       outreach_history: outreachHistory
     });
 
   } catch (error: any) {
-    console.error("CRM Dashboard GET error:", error);
-    return NextResponse.json({ error: error.message || "Could not load CRM data." }, { status: 500 });
+    console.error("CRM Dashboard GET error via MCP:", error);
+    return NextResponse.json({ error: error.message || "Could not load CRM data via MCP." }, { status: 500 });
   }
 }
 
@@ -276,81 +293,35 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing table_number, visit_date, or message_body in request." }, { status: 400 });
     }
 
-    const supabase = createAdminClient();
+    // Call send_revisit_message tool on the MCP server
+    const result = await callMcpTool("send_revisit_message", {
+      table_number,
+      visit_date,
+      message_body,
+      subject: subject || undefined
+    });
 
-    // Step 1: Find the most recent closed session for this table on this date
-    const dayStart = `${visit_date}T00:00:00.000Z`;
-    const dayEnd = `${visit_date}T23:59:59.999Z`;
+    const parsedResult = JSON.parse(result.content[0].text);
 
-    const { data: sessions, error: sessionError } = await supabase
-      .from("brewboard_table_sessions")
-      .select("id, created_at, closed_at")
-      .eq("table_number", table_number)
-      .gte("created_at", dayStart)
-      .lte("created_at", dayEnd)
-      .eq("is_closed", true)
-      .not("closed_at", "is", null)
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (sessionError) throw sessionError;
-
-    if (!sessions || sessions.length === 0) {
-      return NextResponse.json({
-        status: "not_found",
-        message: `No closed session found for table ${table_number} on ${visit_date}. The session may still be open or may not exist.`
-      }, { status: 404 });
+    if (parsedResult.status === 'not_found') {
+      return NextResponse.json({ error: parsedResult.message }, { status: 404 });
     }
-
-    const session = sessions[0];
-
-    // Step 2: Find one user who was part of this session using brewboard_user_sessions
-    const { data: userSessions, error: userSessionError } = await supabase
-      .from("brewboard_user_sessions")
-      .select("user_id")
-      .eq("table_session_id", session.id)
-      .order("created_at", { ascending: true })
-      .limit(1);
-
-    if (userSessionError) throw userSessionError;
-
-    let userId = null;
-    if (userSessions && userSessions.length > 0) {
-      userId = userSessions[0].user_id;
-    } else {
-      return NextResponse.json({
-        status: "no_user",
-        message: `Session found for table ${table_number} on ${visit_date} but no user registration was found in brewboard_user_sessions. Cannot send message.`
-      }, { status: 400 });
+    if (parsedResult.status === 'no_user') {
+      return NextResponse.json({ error: parsedResult.message }, { status: 400 });
     }
-
-    // Step 3: Insert into crm_messages
-    const { data: msg, error: insertError } = await supabase
-      .from("crm_messages")
-      .insert({
-        user_id: userId,
-        channel: "simulated",
-        subject: subject || null,
-        body: message_body,
-        triggered_by: "admin-crm-dashboard"
-      })
-      .select("id, sent_at")
-      .single();
-
-    if (insertError) throw insertError;
 
     return NextResponse.json({
       status: "simulated",
-      message_id: msg.id,
-      sent_at: msg.sent_at,
+      message_id: parsedResult.message_id,
+      sent_at: parsedResult.sent_at,
       table_number,
       visit_date,
       channel: "simulated",
-      note: "Message recorded in outreach history."
+      note: parsedResult.note
     });
 
   } catch (error: any) {
-    console.error("CRM Outreach POST error:", error);
-    return NextResponse.json({ error: error.message || "Failed to dispatch outreach message." }, { status: 500 });
+    console.error("CRM Outreach POST error via MCP:", error);
+    return NextResponse.json({ error: error.message || "Failed to dispatch outreach message via MCP." }, { status: 500 });
   }
 }
