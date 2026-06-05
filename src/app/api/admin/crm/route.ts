@@ -43,7 +43,7 @@ export async function GET(request: Request) {
         .select("name, category"),
       supabase
         .from("crm_messages")
-        .select("id, user_id, channel, subject, body, sent_at, triggered_by, profiles(full_name, email, avatar_url)")
+        .select("id, user_id, channel, subject, body, sent_at, triggered_by")
         .order("sent_at", { ascending: false })
         .limit(50)
     ]);
@@ -57,6 +57,24 @@ export async function GET(request: Request) {
     const sessions = sessionsResult.data ?? [];
     const menuItems = menuItemsResult.data ?? [];
     const messages = messagesResult.data ?? [];
+
+    const userIds = Array.from(new Set(messages.map((m: any) => m.user_id).filter(Boolean)));
+    const profileMap: Record<string, { full_name: string | null; email: string | null; avatar_url: string | null }> = {};
+    if (userIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, avatar_url")
+        .in("id", userIds);
+      if (!profilesError && profiles) {
+        profiles.forEach(p => {
+          profileMap[p.id] = {
+            full_name: p.full_name,
+            email: p.email,
+            avatar_url: p.avatar_url
+          };
+        });
+      }
+    }
 
     // 1. Revenue Summary
     const totalOrders = orders.length;
@@ -226,11 +244,7 @@ export async function GET(request: Request) {
       body: m.body,
       sent_at: m.sent_at,
       triggered_by: m.triggered_by,
-      recipient: m.profiles ? {
-        full_name: m.profiles.full_name,
-        email: m.profiles.email,
-        avatar_url: m.profiles.avatar_url
-      } : null
+      recipient: m.user_id && profileMap[m.user_id] ? profileMap[m.user_id] : null
     }));
 
     return NextResponse.json({
